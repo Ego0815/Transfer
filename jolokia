@@ -1,0 +1,9 @@
+curl -X POST \
+  -u admin:admin \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "exec",
+    "mbean": "org.apache.activemq:type=Broker,brokerName=localhost,destinationType=Queue,destinationName=abc/xyz/testqueue",
+    "operation": "purge"
+  }' \
+  "http://localhost:8161/api/jolokia/"
