@@ -1,51 +1,92 @@
-import java.io.IOException;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.context.annotation.Bean;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.ResponseEntity;
+import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestTemplate;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+@SpringBootApplication
+public class ActiveMQJolokiaApplication {
 
-public class ActiveMQQueueManager {
+    public static void main(String[] args) {
+        SpringApplication.run(ActiveMQJolokiaApplication.class, args);
+    }
+
+    @Bean
+    public RestTemplate restTemplate() {
+        return new RestTemplate();
+    }
+
+    @Bean
+    public ObjectMapper objectMapper() {
+        return new ObjectMapper();
+    }
+}
+
+@Service
+public class ActiveMQQueueService {
     
-    private final String jolokiaUrl;
-    private final HttpClient httpClient;
+    private final RestTemplate restTemplate;
     private final ObjectMapper objectMapper;
+    private final String jolokiaUrl;
     
-    public ActiveMQQueueManager(String activeMQHost, int jolokiaPort) {
-        this.jolokiaUrl = String.format("http://%s:%d/api/jolokia", activeMQHost, jolokiaPort);
-        this.httpClient = HttpClient.newHttpClient();
-        this.objectMapper = new ObjectMapper();
+    public ActiveMQQueueService(RestTemplate restTemplate, ObjectMapper objectMapper) {
+        this.restTemplate = restTemplate;
+        this.objectMapper = objectMapper;
+        // Standardmäßig läuft Jolokia auf Port 8161
+        this.jolokiaUrl = "http://localhost:8161/api/jolokia";
     }
     
     /**
-     * Fragt alle Queue-Namen von ActiveMQ über Jolokia ab
+     * Konstruktor mit custom URL
+     */
+    public ActiveMQQueueService(RestTemplate restTemplate, ObjectMapper objectMapper, String activeMQHost, int jolokiaPort) {
+        this.restTemplate = restTemplate;
+        this.objectMapper = objectMapper;
+        this.jolokiaUrl = String.format("http://%s:%d/api/jolokia", activeMQHost, jolokiaPort);
+    }
+    
+    /**
+     * Fragt alle Queue-Namen von ActiveMQ über Jolokia ab (GET-Request)
      * @param brokerName Name des Brokers (standardmäßig "localhost")
      * @return Liste aller Queue-Namen
-     * @throws IOException bei Verbindungs- oder Parsing-Fehlern
+     * @throws Exception bei Verbindungs- oder Parsing-Fehlern
      */
-    public List<String> getAllQueueNames(String brokerName) throws IOException, InterruptedException {
+    public List<String> getAllQueueNames(String brokerName) throws Exception {
         List<String> queueNames = new ArrayList<>();
         
-        // Jolokia Request für alle Queue MBeans
+        // Jolokia Search Request für alle Queue MBeans
         String mBeanPattern = String.format("org.apache.activemq:type=Broker,brokerName=%s,destinationType=Queue,destinationName=*", brokerName);
         String requestUrl = String.format("%s/search/%s", jolokiaUrl, mBeanPattern);
         
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(requestUrl))
-                .GET()
-                .header("Content-Type", "application/json")
-                .build();
+        // HTTP Headers setzen
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("Content-Type", "application/json");
+        headers.set("Accept", "application/json");
         
-        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        HttpEntity<String> entity = new HttpEntity<>(headers);
         
-        if (response.statusCode() == 200) {
-            JsonNode jsonResponse = objectMapper.readTree(response.body());
+        // GET Request ausführen
+        ResponseEntity<String> response = restTemplate.exchange(
+            requestUrl, 
+            HttpMethod.GET, 
+            entity, 
+            String.class
+        );
+        
+        if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
+            JsonNode jsonResponse = objectMapper.readTree(response.getBody());
             JsonNode valueNode = jsonResponse.get("value");
             
             if (valueNode != null && valueNode.isArray()) {
@@ -57,7 +98,106 @@ public class ActiveMQQueueManager {
                 }
             }
         } else {
-            throw new IOException("Fehler beim Abrufen der Queue-Liste. HTTP Status: " + response.statusCode());
+            throw new RuntimeException("Fehler beim Abrufen der Queue-Liste. HTTP Status: " + response.getStatusCode());
+        }
+        
+        return queueNames;
+    }
+    
+    /**
+     * Alternative Methode mit POST-Request für komplexere Abfragen
+     * @param brokerName Name des Brokers
+     * @return Liste aller Queue-Namen
+     * @throws Exception bei Verbindungs- oder Parsing-Fehlern
+     */
+    public List<String> getAllQueueNamesWithPost(String brokerName) throws Exception {
+        List<String> queueNames = new ArrayList<>();
+        
+        // JSON Request Body für Jolokia
+        String requestBody = String.format(
+            "{\"type\":\"search\",\"mbean\":\"org.apache.activemq:type=Broker,brokerName=%s,destinationType=Queue,destinationName=*\"}",
+            brokerName
+        );
+        
+        // HTTP Headers setzen
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("Content-Type", "application/json");
+        headers.set("Accept", "application/json");
+        
+        HttpEntity<String> entity = new HttpEntity<>(requestBody, headers);
+        
+        // POST Request ausführen
+        ResponseEntity<String> response = restTemplate.exchange(
+            jolokiaUrl, 
+            HttpMethod.POST, 
+            entity, 
+            String.class
+        );
+        
+        if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
+            JsonNode jsonResponse = objectMapper.readTree(response.getBody());
+            JsonNode valueNode = jsonResponse.get("value");
+            
+            if (valueNode != null && valueNode.isArray()) {
+                for (JsonNode mBeanName : valueNode) {
+                    String queueName = extractQueueNameFromMBean(mBeanName.asText());
+                    if (queueName != null && !queueName.isEmpty()) {
+                        queueNames.add(queueName);
+                    }
+                }
+            }
+        } else {
+            throw new RuntimeException("Fehler beim Abrufen der Queue-Liste. HTTP Status: " + response.getStatusCode());
+        }
+        
+        return queueNames;
+    }
+    
+    /**
+     * Methode mit Basic Authentication
+     * @param brokerName Name des Brokers
+     * @param username Benutzername für ActiveMQ
+     * @param password Passwort für ActiveMQ
+     * @return Liste aller Queue-Namen
+     * @throws Exception bei Verbindungs- oder Parsing-Fehlern
+     */
+    public List<String> getAllQueueNamesWithAuth(String brokerName, String username, String password) throws Exception {
+        List<String> queueNames = new ArrayList<>();
+        
+        String requestBody = String.format(
+            "{\"type\":\"search\",\"mbean\":\"org.apache.activemq:type=Broker,brokerName=%s,destinationType=Queue,destinationName=*\"}",
+            brokerName
+        );
+        
+        // HTTP Headers mit Basic Auth
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("Content-Type", "application/json");
+        headers.set("Accept", "application/json");
+        headers.setBasicAuth(username, password);
+        
+        HttpEntity<String> entity = new HttpEntity<>(requestBody, headers);
+        
+        ResponseEntity<String> response = restTemplate.exchange(
+            jolokiaUrl, 
+            HttpMethod.POST, 
+            entity, 
+            String.class
+        );
+        
+        if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
+            JsonNode jsonResponse = objectMapper.readTree(response.getBody());
+            JsonNode valueNode = jsonResponse.get("value");
+            
+            if (valueNode != null && valueNode.isArray()) {
+                for (JsonNode mBeanName : valueNode) {
+                    String queueName = extractQueueNameFromMBean(mBeanName.asText());
+                    if (queueName != null && !queueName.isEmpty()) {
+                        queueNames.add(queueName);
+                    }
+                }
+            }
+        } else {
+            throw new RuntimeException("Fehler beim Abrufen der Queue-Liste. HTTP Status: " + response.getStatusCode());
         }
         
         return queueNames;
@@ -80,66 +220,63 @@ public class ActiveMQQueueManager {
     }
     
     /**
-     * Alternative Methode mit POST-Request für komplexere Abfragen
+     * Gibt detaillierte Queue-Informationen zurück
      * @param brokerName Name des Brokers
-     * @return Liste aller Queue-Namen
-     * @throws IOException bei Verbindungs- oder Parsing-Fehlern
+     * @return Liste mit Queue-Namen und zusätzlichen Informationen
+     * @throws Exception bei Fehlern
      */
-    public List<String> getAllQueueNamesWithPost(String brokerName) throws IOException, InterruptedException {
-        List<String> queueNames = new ArrayList<>();
+    public List<QueueInfo> getDetailedQueueInfo(String brokerName) throws Exception {
+        List<QueueInfo> queueInfos = new ArrayList<>();
+        List<String> queueNames = getAllQueueNames(brokerName);
         
-        // JSON Request Body für Jolokia
-        String requestBody = String.format(
-            "{\"type\":\"search\",\"mbean\":\"org.apache.activemq:type=Broker,brokerName=%s,destinationType=Queue,destinationName=*\"}",
-            brokerName
-        );
-        
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(jolokiaUrl))
-                .POST(HttpRequest.BodyPublishers.ofString(requestBody))
-                .header("Content-Type", "application/json")
-                .build();
-        
-        HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-        
-        if (response.statusCode() == 200) {
-            JsonNode jsonResponse = objectMapper.readTree(response.body());
-            JsonNode valueNode = jsonResponse.get("value");
+        for (String queueName : queueNames) {
+            // Detaillierte Informationen für jede Queue abrufen
+            String mBean = String.format("org.apache.activemq:type=Broker,brokerName=%s,destinationType=Queue,destinationName=%s", 
+                                       brokerName, queueName);
+            String requestBody = String.format(
+                "{\"type\":\"read\",\"mbean\":\"org.apache.activemq:type=Broker,brokerName=%s,destinationType=Queue,destinationName=%s\"}",
+                brokerName, queueName
+            );
             
-            if (valueNode != null && valueNode.isArray()) {
-                for (JsonNode mBeanName : valueNode) {
-                    String queueName = extractQueueNameFromMBean(mBeanName.asText());
-                    if (queueName != null && !queueName.isEmpty()) {
-                        queueNames.add(queueName);
+            HttpHeaders headers = new HttpHeaders();
+            headers.set("Content-Type", "application/json");
+            
+            HttpEntity<String> entity = new HttpEntity<>(requestBody, headers);
+            
+            try {
+                ResponseEntity<String> response = restTemplate.exchange(
+                    jolokiaUrl, 
+                    HttpMethod.POST, 
+                    entity, 
+                    String.class
+                );
+                
+                if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
+                    JsonNode jsonResponse = objectMapper.readTree(response.getBody());
+                    JsonNode valueNode = jsonResponse.get("value");
+                    
+                    if (valueNode != null) {
+                        QueueInfo info = new QueueInfo();
+                        info.setName(queueName);
+                        info.setQueueSize(valueNode.path("QueueSize").asLong(0));
+                        info.setConsumerCount(valueNode.path("ConsumerCount").asLong(0));
+                        info.setEnqueueCount(valueNode.path("EnqueueCount").asLong(0));
+                        info.setDequeueCount(valueNode.path("DequeueCount").asLong(0));
+                        queueInfos.add(info);
                     }
                 }
+            } catch (Exception e) {
+                // Bei Fehlern für einzelne Queue, trotzdem fortfahren
+                System.err.println("Fehler beim Abrufen der Details für Queue " + queueName + ": " + e.getMessage());
             }
-        } else {
-            throw new IOException("Fehler beim Abrufen der Queue-Liste. HTTP Status: " + response.statusCode());
         }
         
-        return queueNames;
+        return queueInfos;
     }
     
-    /**
-     * Hauptmethode zum Testen
-     */
-    public static void main(String[] args) {
-        try {
-            // ActiveMQ läuft standardmäßig auf Port 8161 für Jolokia
-            ActiveMQQueueManager manager = new ActiveMQQueueManager("localhost", 8161);
-            
-            // Queue-Namen abrufen (Broker-Name ist standardmäßig "localhost")
-            List<String> queueNames = manager.getAllQueueNames("localhost");
-            
-            System.out.println("Gefundene Queues:");
-            for (String queueName : queueNames) {
-                System.out.println("- " + queueName);
-            }
-            
-        } catch (Exception e) {
-            System.err.println("Fehler beim Abrufen der Queue-Liste: " + e.getMessage());
-            e.printStackTrace();
-        }
-    }
-}
+    // Hilfsklasse für detaillierte Queue-Informationen
+    public static class QueueInfo {
+        private String name;
+        private long queueSize;
+        private long consumerCount;
+        private long
