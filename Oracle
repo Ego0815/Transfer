@@ -51,14 +51,16 @@ BEGIN
     DBMS_OUTPUT.PUT_LINE('=== Schema-Cleanup: Lösche Tabellen in FK-Reihenfolge ===');
     
     FOR rec IN c_deletion_order LOOP
+        DECLARE
+            v_current_table VARCHAR2(128) := rec.table_name;
         BEGIN
-            v_sql := 'DELETE FROM ' || rec.table_name;
+            v_sql := 'DELETE FROM ' || v_current_table;
             EXECUTE IMMEDIATE v_sql;
             v_rows_deleted := SQL%ROWCOUNT;
             
             IF v_rows_deleted > 0 THEN
                 v_total_deleted := v_total_deleted + v_rows_deleted;
-                DBMS_OUTPUT.PUT_LINE('✓ ' || RPAD(rec.table_name, 30) || ' - ' || v_rows_deleted || ' Zeilen gelöscht');
+                DBMS_OUTPUT.PUT_LINE('✓ ' || RPAD(v_current_table, 30) || ' - ' || v_rows_deleted || ' Zeilen gelöscht');
             END IF;
             
             v_table_count := v_table_count + 1;
@@ -67,7 +69,7 @@ BEGIN
         EXCEPTION
             WHEN OTHERS THEN
                 v_error_count := v_error_count + 1;
-                DBMS_OUTPUT.PUT_LINE('✗ ' || rec.table_name || ': ' || SQLERRM);
+                DBMS_OUTPUT.PUT_LINE('✗ ' || v_current_table || ': ' || SQLERRM);
                 ROLLBACK;
         END;
     END LOOP;
