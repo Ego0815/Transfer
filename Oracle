@@ -1,83 +1,18 @@
--- Kompaktes Script zum Löschen von Tabelleninhalten nach FK-Abhängigkeiten
--- WICHTIG: Backup vor Ausführung erstellen!
-
-SET SERVEROUTPUT ON;
-
+SET SERVEROUTPUT ON
 DECLARE
     v_sql VARCHAR2(4000);
-    v_rows_deleted NUMBER;
-    v_total_deleted NUMBER := 0;
-    v_table_count NUMBER := 0;
-    v_error_count NUMBER := 0;
-    
-    -- Cursor für FK-abhängige Löschreihenfolge
-    CURSOR c_deletion_order IS
-        WITH dependency_levels AS (
-            SELECT 
-                table_name,
-                LEVEL as deletion_order
-            FROM (
-                -- Alle Tabellen
-                SELECT DISTINCT table_name FROM user_tables 
-                WHERE table_name NOT LIKE '%$%'
-                UNION
-                -- Parent-Tabellen aus FK-Beziehungen
-                SELECT DISTINCT r.table_name
-                FROM user_constraints c
-                JOIN user_constraints r ON c.r_constraint_name = r.constraint_name
-                WHERE c.constraint_type = 'R' AND c.status = 'ENABLED'
-            )
-            START WITH table_name NOT IN (
-                -- Tabellen mit ausgehenden FKs (Child-Tabellen)
-                SELECT DISTINCT table_name
-                FROM user_constraints
-                WHERE constraint_type = 'R' AND status = 'ENABLED'
-            )
-            CONNECT BY PRIOR table_name IN (
-                -- Parent-Tabellen der aktuellen Tabelle
-                SELECT r.table_name
-                FROM user_constraints c
-                JOIN user_constraints r ON c.r_constraint_name = r.constraint_name
-                WHERE c.constraint_type = 'R' 
-                AND c.status = 'ENABLED'
-                AND c.table_name = table_name
-            )
-        )
-        SELECT DISTINCT table_name, deletion_order
-        FROM dependency_levels
-        ORDER BY deletion_order, table_name;
-
 BEGIN
-    DBMS_OUTPUT.PUT_LINE('=== Schema-Cleanup: Lösche Tabellen in FK-Reihenfolge ===');
-    
-    FOR rec IN c_deletion_order LOOP
-        DECLARE
-            v_current_table VARCHAR2(128) := rec.table_name;
+    FOR t IN (SELECT table_name FROM user_tables) LOOP
+        v_sql := 'TRUNCATE TABLE ' || t.table_name || ' CASCADE';
         BEGIN
-            v_sql := 'DELETE FROM ' || v_current_table;
             EXECUTE IMMEDIATE v_sql;
-            v_rows_deleted := SQL%ROWCOUNT;
-            
-            IF v_rows_deleted > 0 THEN
-                v_total_deleted := v_total_deleted + v_rows_deleted;
-                DBMS_OUTPUT.PUT_LINE('✓ ' || RPAD(v_current_table, 30) || ' - ' || v_rows_deleted || ' Zeilen gelöscht');
-            END IF;
-            
-            v_table_count := v_table_count + 1;
-            COMMIT;
-            
+            DBMS_OUTPUT.put_line(v_sql || ' ;');
         EXCEPTION
             WHEN OTHERS THEN
-                v_error_count := v_error_count + 1;
-                DBMS_OUTPUT.PUT_LINE('✗ ' || v_current_table || ': ' || SQLERRM);
-                ROLLBACK;
+                -- Falls eine Tabelle nicht truncatable ist (z. B. IOT overflow),
+                -- nur Meldung ausgeben, Skript läuft weiter
+                DBMS_OUTPUT.put_line('Übersprungen: ' || v_sql || ' -> ' || SQLERRM);
         END;
     END LOOP;
-    
-    DBMS_OUTPUT.PUT_LINE('=== Abgeschlossen ===');
-    DBMS_OUTPUT.PUT_LINE('Tabellen verarbeitet: ' || v_table_count);
-    DBMS_OUTPUT.PUT_LINE('Zeilen gesamt gelöscht: ' || v_total_deleted);
-    DBMS_OUTPUT.PUT_LINE('Fehler: ' || v_error_count);
-    
 END;
 /
