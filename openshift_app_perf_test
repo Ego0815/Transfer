@@ -1,0 +1,102 @@
+🔍 Checkliste: Langsame App-zu-App Kommunikation in OpenShift
+1️⃣ DNS-Auflösung prüfen
+
+Langsame DNS-Queries sind ein häufiger Grund.
+
+👉 In einen Pod springen:
+
+oc exec -it <pod-name> -- /bin/sh
+
+
+👉 DNS-Auflösung messen:
+
+time dig backend
+time dig backend.my-namespace.svc.cluster.local
+
+
+➡️ Erwartung: Antwort < 10 ms.
+Wenn langsamer → CoreDNS oder ClusterDNS checken.
+
+2️⃣ Direkte Netzwerk-Performance messen
+a) Mit ping
+oc exec -it <pod-1> -- ping -c 4 <pod-2-ip>
+
+
+➡️ Wenn ping schnell, aber App langsam → Problem in App oder Proxy-Ebene.
+
+b) Mit iperf3
+
+In einem Pod als Server starten:
+
+iperf3 -s
+
+
+In anderem Pod als Client testen:
+
+iperf3 -c <server-pod-ip>
+
+
+➡️ Liefert Throughput und Latenz.
+
+3️⃣ Service-Layer prüfen (ClusterIP, kube-proxy)
+curl -w "@curl-format.txt" -o /dev/null -s http://backend:8080
+
+
+(curl-format.txt vorher mit Timing-Parametern anlegen)
+
+➡️ Vergleich: Pod-IP direkt vs. Service-DNS vs. Route.
+Wenn über Service deutlich langsamer → Problem bei kube-proxy oder SDN.
+
+4️⃣ Service Mesh Overhead checken
+
+Falls OpenShift Service Mesh / Istio genutzt wird:
+
+oc get pods -o yaml | grep -i "istio-proxy"
+
+
+Wenn vorhanden → Traffic geht durch Envoy-Sidecars.
+
+👉 Vergleichstest: einmal mit Mesh (normaler Aufruf) vs. ohne Mesh (direkte Pod-IP).
+➡️ Unterschied > 5–10 ms → Mesh-Overhead.
+
+5️⃣ Ressourcenlage prüfen
+Pods
+oc adm top pods -n <namespace>
+
+
+➡️ Siehst du hohe CPU/Memory-Last?
+
+Nodes
+oc adm top nodes
+
+
+➡️ Überlastete Nodes = langsame Netzwerkarbeit.
+
+6️⃣ Netzwerk-Konfiguration prüfen
+MTU prüfen (häufiger Fehler bei Overlay-Netzen)
+oc exec -it <pod> -- ip a
+
+
+➡️ MTU-Werte müssen mit Host-Nodes übereinstimmen.
+Zu kleine MTU = Fragmentierung → langsamer Traffic.
+
+7️⃣ Security Layer prüfen
+
+NetworkPolicies vorhanden?
+
+oc get networkpolicies -A
+
+
+Zusätzliche Firewalls / IDS-Systeme aktiv?
+
+➡️ Test: Kommunikation ohne Policies → schneller?
+
+8️⃣ Infrastruktur-Ebene
+
+Prüfen, ob Pods auf verschiedenen Nodes laufen:
+
+oc get pod -o wide
+
+
+Test: Beide Pods auf demselben Node (Affinity) starten → schneller?
+➡️ Wenn ja: Cluster-Netzwerk/Overlay die Ursache.
